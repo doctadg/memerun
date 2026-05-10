@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>MEME RUN :: TROLL EDITION</title>
+<link rel="icon" type="image/png" href="frog.png">
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body {
@@ -393,6 +394,38 @@
   trollImg.onerror = () => { trollImgLoaded = false; };
   trollImg.src = 'troll.png';
 
+  // Intervention sniper PNG (overlay during INTERVENTION powerup)
+  const sniperImg = new Image();
+  let sniperImgLoaded = false;
+  sniperImg.onload = () => { sniperImgLoaded = true; };
+  sniperImg.onerror = () => { sniperImgLoaded = false; };
+  sniperImg.src = 'intervention.png';
+
+  // Brainrot frog PNG (replaces canvas-drawn frog for obstacles & background)
+  const frogImg = new Image();
+  let frogImgLoaded = false;
+  frogImg.onload = () => { frogImgLoaded = true; };
+  frogImg.onerror = () => { frogImgLoaded = false; };
+  frogImg.src = 'frog.png';
+
+  // Audio pools — clones rotated for overlap on rapid fire
+  function makePool(src, count, vol) {
+    const pool = [];
+    for (let i = 0; i < count; i++) {
+      const a = new Audio(src);
+      a.preload = 'auto';
+      a.volume = vol;
+      pool.push(a);
+    }
+    let idx = 0;
+    return () => {
+      const a = pool[idx++ % count];
+      try { a.currentTime = 0; a.play().catch(() => {}); } catch(e) {}
+    };
+  }
+  const playHitmarker = makePool('hitmarker.mp3', 6, 0.45);
+  const playSniperFire = makePool('sniper-fire.mp3', 4, 0.4);
+
   let W = 0, H = 0, GROUND_Y = 0;
   let scale = 1;            // visual scale, derived from window height
   const REF_H = 720;        // reference height all sizes are derived from
@@ -482,6 +515,8 @@
     shieldT: 0,
     magnetT: 0,
     doubleT: 0,
+    snipeT: 0,
+    snipeCooldown: 0,
   };
 
   const obstacles = [];
@@ -500,10 +535,14 @@
   // POWER-UP TYPES
   // ============================================================
   const PU = {
-    SHIELD: { id: 'SHIELD', color: '#00bbff', glow: '#00ffff', label: 'SHIELD',  duration: 0,    icon: 'shield' },
-    MAGNET: { id: 'MAGNET', color: '#ff3366', glow: '#ff66aa', label: 'MAGNET',  duration: 360,  icon: 'magnet' },
-    DOUBLE: { id: 'DOUBLE', color: '#ffcc00', glow: '#ffee00', label: '2X SWAG', duration: 360,  icon: 'x2' },
+    SHIELD:    { id: 'SHIELD',    color: '#00bbff', glow: '#00ffff', label: 'SHIELD',       duration: 0,    icon: 'shield' },
+    MAGNET:    { id: 'MAGNET',    color: '#ff3366', glow: '#ff66aa', label: 'MAGNET',       duration: 360,  icon: 'magnet' },
+    DOUBLE:    { id: 'DOUBLE',    color: '#ffcc00', glow: '#ffee00', label: '2X SWAG',      duration: 360,  icon: 'x2' },
+    SNIPER:    { id: 'SNIPER',    color: '#7d4f1f', glow: '#ffae33', label: 'INTERVENTION', duration: 480,  icon: 'sniper' },
   };
+
+  // Active tracers for sniper shots
+  const tracers = [];
 
   // ============================================================
   // SOUND
@@ -675,6 +714,9 @@
     player.shieldT = 0;
     player.magnetT = 0;
     player.doubleT = 0;
+    player.snipeT = 0;
+    player.snipeCooldown = 0;
+    tracers.length = 0;
     speed = BASE_SPEED;
     score = 0;
     coinsCollected = 0;
@@ -833,8 +875,13 @@
   }
 
   function spawnPowerup() {
-    const types = ['SHIELD', 'MAGNET', 'DOUBLE'];
-    const type = types[Math.floor(Math.random() * types.length)];
+    // Sniper is rarer than the rest
+    const r = Math.random();
+    let type;
+    if (r < 0.20) type = 'SNIPER';
+    else if (r < 0.46) type = 'SHIELD';
+    else if (r < 0.73) type = 'MAGNET';
+    else type = 'DOUBLE';
     powerups.push({
       type,
       x: W + 60,
@@ -920,6 +967,7 @@
     if (player.shieldT > 0) player.shieldT--;
     if (player.magnetT > 0) player.magnetT--;
     if (player.doubleT > 0) player.doubleT--;
+    if (player.snipeT > 0) player.snipeT--;
     if (player.invulnT > 0) player.invulnT--;
     updatePowerupUI();
 
@@ -947,12 +995,80 @@
       nextPowerupAt = frame + 600 + Math.floor(Math.random() * 600);
     }
 
+    // Sniper auto-fire — while INTERVENTION is active, shoot the leftmost on-screen frog
+    if (player.snipeT > 0) {
+      if (player.snipeCooldown > 0) player.snipeCooldown--;
+      if (player.snipeCooldown <= 0) {
+        let target = null, bestX = Infinity;
+        for (const o of obstacles) {
+          if (o.type === 'frog' && !o.shot && o.x > -20 && o.x < W && o.x < bestX) {
+            bestX = o.x; target = o;
+          }
+        }
+        if (target) {
+          target.shot = true;
+          target.vxShot = 8 + Math.random() * 4;
+          target.vyShot = -14 - Math.random() * 6;
+          target.rot = 0;
+          target.vRot = (Math.random() - 0.5) * 0.6;
+          score += 50;
+          playSniperFire();
+          // hitmarker plays slightly delayed for that "fire → hit" sequencing
+          setTimeout(playHitmarker, 80);
+          showToast('+50', '#ffae33');
+          // tracer line from sniper muzzle to target
+          const muzzle = getSniperMuzzle();
+          const muzzleX = muzzle.x;
+          const muzzleY = muzzle.y;
+          const tcx = target.x + target.w/2;
+          const tcy = target.y + target.h/2;
+          tracers.push({ x1: muzzleX, y1: muzzleY, x2: tcx, y2: tcy, life: 8, max: 8, target });
+          // muzzle flash particles
+          for (let p = 0; p < 10; p++) {
+            particles.push({
+              x: muzzleX + (Math.random()-0.5)*20, y: muzzleY + (Math.random()-0.5)*20,
+              vx: (Math.random()-0.5)*6, vy: (Math.random()-0.8)*6,
+              life: 14, max: 14, color: ['#ffea00','#ffae33','#fff'][Math.floor(Math.random()*3)],
+              size: 3 + Math.random()*4,
+            });
+          }
+          // impact sparks
+          for (let p = 0; p < 12; p++) {
+            particles.push({
+              x: tcx, y: tcy,
+              vx: (Math.random()-0.5)*8, vy: (Math.random()-0.5)*8 - 2,
+              life: 22, max: 22, color: ['#ff3366','#ffea00','#fff'][Math.floor(Math.random()*3)],
+              size: 3 + Math.random()*3,
+            });
+          }
+          player.snipeCooldown = 28; // ~0.47s between shots
+        }
+      }
+    }
+
+    // tracer fade
+    for (let i = tracers.length - 1; i >= 0; i--) {
+      tracers[i].life--;
+      if (tracers[i].life <= 0) tracers.splice(i, 1);
+    }
+
     // Update obstacles
     for (let i = obstacles.length - 1; i >= 0; i--) {
       const o = obstacles[i];
+      if (o.shot) {
+        // ragdoll fly-off, no collision
+        o.x += o.vxShot;
+        o.y += o.vyShot;
+        o.vyShot += GRAVITY * 0.4;
+        o.rot = (o.rot || 0) + (o.vRot || 0);
+        if (o.y > H + 100 || o.x > W + 200 || o.x < -200) {
+          obstacles.splice(i, 1);
+        }
+        continue;
+      }
       o.x -= speed;
       if (o.bob !== undefined) o.bob += 0.12;
-      if (o.rot !== undefined) o.rot += 0.2;
+      if (o.rot !== undefined && o.type === 'saw') o.rot += 0.2;
       if (o.x + o.w < -40) { obstacles.splice(i, 1); continue; }
 
       // collision (with shrink for fairness)
@@ -1060,6 +1176,7 @@
         if (p.type === 'SHIELD') player.shieldT = 1; // sentinel >0 = active
         else if (p.type === 'MAGNET') player.magnetT = t.duration;
         else if (p.type === 'DOUBLE') player.doubleT = t.duration;
+        else if (p.type === 'SNIPER') { player.snipeT = t.duration; player.snipeCooldown = 30; }
         for (let q = 0; q < 22; q++) {
           particles.push({
             x: p.x, y: p.y, vx: (Math.random()-0.5)*9, vy: (Math.random()-0.5)*9 - 3,
@@ -1108,6 +1225,9 @@
     if (player.doubleT > 0) {
       html += `<div class="pu-bar" style="border-color:#ffcc00;color:#ffcc00">2× SWAG <div class="fill" style="--p:${player.doubleT/360}"></div></div>`;
     }
+    if (player.snipeT > 0) {
+      html += `<div class="pu-bar" style="border-color:#ffae33;color:#ffae33">⌖ INTERVENTION <div class="fill" style="--p:${player.snipeT/480}"></div></div>`;
+    }
     el.innerHTML = html;
   }
 
@@ -1129,7 +1249,7 @@
     player.deadVy = -12 * scale;
     player.deadRotV = 0.2;
     shake = 18;
-    sfx.hit();
+    playHitmarker();
     for (let i = 0; i < 30; i++) {
       particles.push({
         x: player.x + player.w/2, y: player.y + player.h/2,
@@ -1243,6 +1363,16 @@
   }
 
   function drawBrainrotFrog(x, y, size) {
+    if (frogImgLoaded) {
+      const ratio = (frogImg.naturalHeight || 1) / (frogImg.naturalWidth || 1);
+      const w = size;
+      const h = size * ratio;
+      // center vertically within the size box (so old call-sites that assume ~size tall stay aligned)
+      const dy = (size - h) / 2;
+      ctx.drawImage(frogImg, x, y + dy, w, h);
+      return;
+    }
+    // Fallback canvas-drawn frog if image hasn't loaded
     const cx = x + size / 2;
     const cy = y + size * 0.55;
     const w = size * 0.9, h = size * 0.7;
@@ -1256,30 +1386,10 @@
     ctx.beginPath();
     ctx.ellipse(cx, cy, w/2, h/2, 0, 0, Math.PI * 2);
     ctx.fill();
-    ctx.beginPath();
-    ctx.ellipse(cx - size*0.22, cy - h*0.45, size*0.18, size*0.22, 0, 0, Math.PI * 2);
-    ctx.ellipse(cx + size*0.22, cy - h*0.45, size*0.18, size*0.22, 0, 0, Math.PI * 2);
-    ctx.fill();
     ctx.fillStyle = '#fff';
     ctx.beginPath();
     ctx.arc(cx - size*0.22, cy - h*0.42, size*0.10, 0, Math.PI * 2);
     ctx.arc(cx + size*0.22, cy - h*0.42, size*0.10, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#000';
-    ctx.beginPath();
-    ctx.arc(cx - size*0.21, cy - h*0.41, size*0.05, 0, Math.PI * 2);
-    ctx.arc(cx + size*0.23, cy - h*0.41, size*0.05, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(80,0,40,0.6)';
-    ctx.lineWidth = Math.max(2, size * 0.025);
-    ctx.lineCap = 'round';
-    ctx.beginPath();
-    ctx.moveTo(cx - size*0.28, cy + h*0.12);
-    ctx.quadraticCurveTo(cx, cy + h*0.28, cx + size*0.28, cy + h*0.12);
-    ctx.stroke();
-    ctx.fillStyle = 'rgba(255,255,255,0.3)';
-    ctx.beginPath();
-    ctx.ellipse(cx - size*0.18, cy - h*0.05, size*0.12, size*0.06, -0.3, 0, Math.PI * 2);
     ctx.fill();
   }
 
@@ -1568,8 +1678,16 @@
         ctx.fillStyle = '#444';
         ctx.fillRect(o.x - 4, o.y + o.h - 4, o.w + 8, 6);
       } else if (o.type === 'frog') {
-        const oy = o.y + Math.sin(o.bob) * 5;
-        drawBrainrotFrog(o.x, oy, o.w);
+        if (o.shot) {
+          ctx.save();
+          ctx.translate(o.x + o.w/2, o.y + o.h/2);
+          ctx.rotate(o.rot || 0);
+          drawBrainrotFrog(-o.w/2, -o.h/2, o.w);
+          ctx.restore();
+        } else {
+          const oy = o.y + Math.sin(o.bob) * 5;
+          drawBrainrotFrog(o.x, oy, o.w);
+        }
       } else if (o.type === 'saw') {
         // rolling saw blade
         const cx = o.x + o.w/2;
@@ -1660,6 +1778,8 @@
         ctx.fillText('⛨', cx, cy + 2);
       } else if (p.type === 'MAGNET') {
         ctx.fillText('M', cx, cy + 2);
+      } else if (p.type === 'SNIPER') {
+        ctx.fillText('⌖', cx, cy + 2);
       } else {
         ctx.fillText('2×', cx, cy + 2);
       }
@@ -1675,6 +1795,75 @@
       ctx.fillRect(p.x - p.size/2, p.y - p.size/2, p.size, p.size);
     }
     ctx.globalAlpha = 1;
+  }
+
+  function getSniperLayout() {
+    const targetH = Math.min(H * 0.38, 320);
+    const ratio = sniperImgLoaded ? (sniperImg.naturalWidth / sniperImg.naturalHeight) : 1.33;
+    const targetW = targetH * ratio;
+    const x = W - targetW * 0.92;
+    const y = H - targetH * 0.92;
+    return {
+      x, y, w: targetW, h: targetH,
+      muzzleX: x + targetW * 0.08,
+      muzzleY: y + targetH * 0.45,
+    };
+  }
+  function getSniperMuzzle() {
+    const l = getSniperLayout();
+    return { x: l.muzzleX, y: l.muzzleY };
+  }
+
+  function drawTracers() {
+    for (const t of tracers) {
+      const a = t.life / t.max;
+      // outer glow
+      ctx.strokeStyle = `rgba(255, 80, 60, ${a * 0.3})`;
+      ctx.lineWidth = 8;
+      ctx.beginPath();
+      ctx.moveTo(t.x1, t.y1);
+      ctx.lineTo(t.x2, t.y2);
+      ctx.stroke();
+      // core line
+      ctx.strokeStyle = `rgba(255, 230, 200, ${a})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(t.x1, t.y1);
+      ctx.lineTo(t.x2, t.y2);
+      ctx.stroke();
+    }
+  }
+
+  function drawSniperOverlay() {
+    if (player.snipeT <= 0) return;
+
+    // Vignette / scope tint pulses
+    const pulse = 0.85 + Math.sin(frame * 0.15) * 0.05;
+    const vg = ctx.createRadialGradient(W/2, H/2, Math.min(W,H) * 0.3 * pulse, W/2, H/2, Math.max(W,H) * 0.7);
+    vg.addColorStop(0, 'rgba(0,0,0,0)');
+    vg.addColorStop(1, 'rgba(60,30,10,0.55)');
+    ctx.fillStyle = vg;
+    ctx.fillRect(0, 0, W, H);
+
+    // Sniper image, anchored bottom-right
+    const layout = getSniperLayout();
+    if (sniperImgLoaded) {
+      const bob = Math.sin(frame * 0.08) * 2 + (player.runT % (Math.PI*2) < Math.PI ? 1.5 : -1.5);
+      // muzzle flash on cooldown reset (just fired)
+      if (player.snipeCooldown > 22) {
+        ctx.fillStyle = `rgba(255, 220, 100, ${(player.snipeCooldown - 22) / 6 * 0.6})`;
+        ctx.beginPath();
+        ctx.arc(layout.muzzleX, layout.muzzleY + bob, 28 * scale, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.drawImage(sniperImg, layout.x, layout.y + bob, layout.w, layout.h);
+    }
+
+    // Fade out near end
+    if (player.snipeT < 60) {
+      ctx.fillStyle = `rgba(0,0,0,${(60 - player.snipeT) / 60 * 0.15})`;
+      ctx.fillRect(0, 0, W, H);
+    }
   }
 
   // ============================================================
@@ -1697,7 +1886,9 @@
     drawPowerups();
     drawObstacles();
     drawPlayer();
+    drawTracers();
     drawParticles();
+    drawSniperOverlay();
     ctx.restore();
   }
 
