@@ -451,8 +451,8 @@
     GRAVITY    = 0.85 * scale;
     JUMP_POWER = -16  * scale;
     HOLD_THRUST = -0.55 * scale;
-    BASE_SPEED = 7 * scale;
-    MAX_SPEED  = 16 * scale;
+    BASE_SPEED = 4.5 * scale;
+    MAX_SPEED  = 11 * scale;
 
     GROUND_Y = H - 110 * scale;
 
@@ -477,7 +477,6 @@
   // ============================================================
   const STATE = { START: 0, PLAY: 1, DEAD: 2, PAUSED: 3 };
   let state = STATE.START;
-  let prevState = STATE.START;
 
   let frame = 0;
   let speed = 7;
@@ -488,6 +487,9 @@
   let bestComboThisRun = 1;
   let hiscore = parseInt(localStorage.getItem('swagHi') || '0');
   let shake = 0;
+  // World scroll accumulator — only ticks during PLAY, used for all
+  // parallax + ground + foreground scrolling so menus stay still.
+  let groundScroll = 0;
 
   // milestone tracking
   let nextMilestone = 500;
@@ -944,7 +946,10 @@
     if (state !== STATE.PLAY) return;
 
     // Difficulty
-    speed = Math.min(BASE_SPEED + score * 0.0015 * scale, MAX_SPEED);
+    speed = Math.min(BASE_SPEED + score * 0.0009 * scale, MAX_SPEED);
+
+    // Advance world scroll (only ticks during PLAY)
+    groundScroll -= speed;
 
     // Player physics
     if (player.holdFrames > 0) { player.vy += HOLD_THRUST; player.holdFrames--; }
