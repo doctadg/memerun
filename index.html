@@ -660,20 +660,37 @@
   // ============================================================
   // STATE TRANSITIONS
   // ============================================================
+  // Pending timeout for the post-death overlay reveal — must be cleared
+  // when transitioning out of DEAD so it can't fire on top of a new run.
+  let deadOverlayTimeout = null;
+  let deadOverlayReady = false; // true once the 900ms anim window has passed
+  function cancelDeadOverlay() {
+    if (deadOverlayTimeout !== null) {
+      clearTimeout(deadOverlayTimeout);
+      deadOverlayTimeout = null;
+    }
+    deadOverlayReady = false;
+  }
   function startGame() {
     if (!username) { username = 'ANON'; nameInput.value = 'ANON'; localStorage.setItem(NAME_KEY, username); document.getElementById('userDisplay').textContent = username; }
+    cancelDeadOverlay();
     document.getElementById('start').classList.remove('show');
+    document.getElementById('dead').classList.remove('show');
     resetRun();
     state = STATE.PLAY;
     sfx.start();
   }
   function restart() {
+    // Only honor restart once the death animation has played out.
+    if (state === STATE.DEAD && !deadOverlayReady) return;
+    cancelDeadOverlay();
     document.getElementById('dead').classList.remove('show');
     resetRun();
     state = STATE.PLAY;
     sfx.start();
   }
   function goToMenu() {
+    cancelDeadOverlay();
     document.getElementById('dead').classList.remove('show');
     document.getElementById('pause').classList.remove('show');
     state = STATE.START;
@@ -1259,7 +1276,11 @@
         size: 4 + Math.random()*4,
       });
     }
-    setTimeout(() => {
+    cancelDeadOverlay();
+    deadOverlayTimeout = setTimeout(() => {
+      deadOverlayTimeout = null;
+      // bail if we've already transitioned out of DEAD (e.g. user hit restart fast)
+      if (state !== STATE.DEAD) return;
       document.getElementById('finalScore').textContent = score;
       document.getElementById('bestCombo').textContent = 'x' + bestComboThisRun;
       document.getElementById('coinsCollected').textContent = coinsCollected;
@@ -1277,6 +1298,7 @@
         recordEl.classList.remove('show');
       }
       document.getElementById('dead').classList.add('show');
+      deadOverlayReady = true;
     }, 900);
   }
 
@@ -1319,7 +1341,7 @@
   function rgb(c) { return `rgb(${c[0]|0},${c[1]|0},${c[2]|0})`; }
 
   function drawMountainLayer(layer, scrollMul, color, treeColor) {
-    const offset = -frame * speed * scrollMul;
+    const offset = groundScroll * scrollMul;
     ctx.fillStyle = color;
     ctx.beginPath();
     ctx.moveTo(0, GROUND_Y);
@@ -1423,7 +1445,7 @@
     // Grass blades on top edge
     ctx.fillStyle = '#9ee37a';
     const bladeW = 4 * scale;
-    const bladeOffset = (-frame * speed) % (bladeW * 6);
+    const bladeOffset = groundScroll % (bladeW * 6);
     for (let x = bladeOffset; x < W; x += bladeW * 6) {
       ctx.fillRect(x,           GROUND_Y - 2*scale, bladeW, 4*scale);
       ctx.fillRect(x + 8*scale, GROUND_Y - 1*scale, bladeW * 0.8, 3*scale);
@@ -1433,7 +1455,7 @@
     ctx.strokeStyle = 'rgba(0,0,0,0.35)';
     ctx.lineWidth = 1.5;
     const tileW = 120 * scale;
-    const offset = (-frame * speed) % tileW;
+    const offset = groundScroll % tileW;
     for (let x = offset - tileW; x < W + tileW; x += tileW) {
       // jagged cracks
       ctx.beginPath();
@@ -1454,7 +1476,7 @@
     ctx.textBaseline = 'top';
     ctx.textAlign = 'left';
     const emojiTileW = 90 * scale;
-    const offset2 = ((-frame * speed) % emojiTileW + emojiTileW) % emojiTileW - emojiTileW;
+    const offset2 = ((groundScroll) % emojiTileW + emojiTileW) % emojiTileW - emojiTileW;
     for (let x = offset2; x < W + emojiTileW; x += emojiTileW) {
       for (let y = GROUND_Y + grassH + 18 * scale; y < H; y += 38 * scale) {
         ctx.fillText('(°ヮ°)', x + ((y % 60) > 30 ? emojiTileW/2 : 0), y);
@@ -1471,7 +1493,7 @@
   function drawForeground() {
     // grass tufts in front
     ctx.fillStyle = '#3a8a25';
-    const sOff = (-frame * speed * 1.0);
+    const sOff = groundScroll;
     for (const g of fgGrass) {
       const x = ((g.x + sOff) % (W + 200) + (W + 200)) % (W + 200) - 100;
       const y = GROUND_Y;
